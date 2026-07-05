@@ -1,0 +1,32 @@
+# Copy this file to "<job_key>.tf" in this same directory to add a new Glue job.
+# Fill in the values below, then run: terraform init -backend-config=backend.hcl && terraform plan && terraform apply
+
+module "REPLACE_ME_job_key" {
+  source = "../../modules/glue-job"
+
+  job_name          = "REPLACE_ME"
+  glue_version      = "4.0"
+  worker_type       = "G.1X"
+  number_of_workers = 2
+  max_retries       = 0
+  timeout_minutes   = 10
+
+  glue_role_arn = "REPLACE_ME"
+  script_bucket = "REPLACE_ME"
+  script_key    = "scripts/REPLACE_ME.py"
+
+  # Optional overrides (defaults shown):
+  # max_concurrent_runs          = 1
+  # job_bookmark_option          = "job-bookmark-disable"
+  # enable_glue_datacatalog      = true
+  # enable_auto_scaling          = true
+  # enable_observability_metrics = true
+  # datalake_formats             = ""
+  # additional_python_modules    = ""
+  # job_input_params             = ""
+}
+
+# Optionally expose this job's outputs:
+# output "REPLACE_ME_job_key_job_name" {
+#   value = module.REPLACE_ME_job_key.glue_job_name
+# }

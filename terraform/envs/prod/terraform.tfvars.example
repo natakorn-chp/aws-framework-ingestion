@@ -1,0 +1,2 @@
+aws_region   = "REPLACE_ME"
+project_name = "glue-tutorial"
