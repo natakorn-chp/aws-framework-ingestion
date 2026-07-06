@@ -1,0 +1,121 @@
+# Name of the CI/CD pipeline
+name: workflow-terraform-glue-job
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment Environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - 'dev'
+          - 'uat'
+
+permissions:
+  id-token: write   # This is required for requesting the JWT
+  contents: read    # This is required for actions/checkout
+
+jobs:
+  build-and-deploy-framework:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo inputs
+        run: |
+          echo "Deployment Environment: ${{ github.event.inputs.environment }}"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 2.1.3
+
+      - name: Build wheel
+        run: poetry build -f wheel
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_NTK_DEV_DEVOPS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION_DEFAULT }}
+
+      - name: Copy wheel file to S3
+        run: |
+          dest_bucket=$(echo "${{ vars.AWS_NTK_DEV_BUCKET_FWK }}" | sed 's/{{env}}/${{ github.event.inputs.environment }}/g')
+          aws s3 cp dist/*.whl $dest_bucket
+
+  deploy-glue-script:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compute environment name
+        run: echo "ENV_UPPER=$(echo '${{ github.event.inputs.environment }}' | tr '[:lower:]' '[:upper:]')" >> "$GITHUB_ENV"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_NTK_{0}_DEVOPS_ROLE_ARN', env.ENV_UPPER)] }}
+          aws-region: ${{ vars.AWS_REGION_DEFAULT }}
+
+      - name: Copy glue script file to S3
+        run: |
+          dest_bucket=${{ secrets[format('AWS_NTK_{0}_GLUE_SCRIPT_BUCKET_NAME', env.ENV_UPPER)] }}
+          aws s3 cp glue_script/framework-ingestion.py s3://$dest_bucket/scripts/framework-ingestion.py
+
+  deploy-glue-job-tf:
+    needs: [deploy-glue-script,build-and-deploy-framework]
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compute environment name
+        run: echo "ENV_UPPER=$(echo '${{ github.event.inputs.environment }}' | tr '[:lower:]' '[:upper:]')" >> "$GITHUB_ENV"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_NTK_{0}_DEVOPS_ROLE_ARN', env.ENV_UPPER)] }}
+          aws-region: ${{ vars.AWS_REGION_DEFAULT }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '~1.9'
+
+      - name: Terraform init
+        working-directory: terraform/envs/${{ github.event.inputs.environment }}
+        run: terraform init
+
+      - name: Terraform plan
+        working-directory: terraform/envs/${{ github.event.inputs.environment }}
+        env:
+          TF_VAR_glue_role_arn: ${{ secrets[format('AWS_NTK_{0}_GLUE_ROLE_ARN', env.ENV_UPPER)] }}
+          TF_VAR_script_bucket: ${{ secrets[format('AWS_NTK_{0}_GLUE_SCRIPT_BUCKET_NAME', env.ENV_UPPER)] }}
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        working-directory: terraform/envs/${{ github.event.inputs.environment }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Save Terraform state
+        if: ${{ always() && github.event.inputs.environment == 'dev' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfstate-dev
+          path: |
+            terraform/envs/dev/terraform.tfstate
+            terraform/envs/dev/terraform.tfstate.backup
+          if-no-files-found: ignore
